@@ -29,7 +29,7 @@ USAGE:
 
 import os
 from dotenv import load_dotenv
-from azure.identity import DefaultAzureCredential
+from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from azure.ai.projects import AIProjectClient
 from azure.ai.projects.models import (
     AzureAISearchTool,
@@ -42,74 +42,77 @@ from azure.ai.projects.models import (
 load_dotenv()
 
 endpoint = os.environ["FOUNDRY_PROJECT_ENDPOINT"]
+scope = "https://ai.azure.us/.default" if ".azure.us" in endpoint else "https://ai.azure.com/.default"
 
 with (
     DefaultAzureCredential() as credential,
-    AIProjectClient(endpoint=endpoint, credential=credential) as project_client,
-    project_client.get_openai_client() as openai_client,
+    AIProjectClient(endpoint=endpoint, credential=credential, credential_scopes=[scope]) as project_client,
 ):
+    api_key = get_bearer_token_provider(credential, scope)
 
-    # [START tool_declaration]
-    tool = AzureAISearchTool(
-        azure_ai_search=AzureAISearchToolResource(
-            indexes=[
-                AISearchIndexResource(
-                    project_connection_id=os.environ["AI_SEARCH_PROJECT_CONNECTION_ID"],
-                    index_name=os.environ["AI_SEARCH_INDEX_NAME"],
-                    query_type=AzureAISearchQueryType.SIMPLE,
-                ),
-            ]
+    with project_client.get_openai_client(api_key=api_key) as openai_client:
+
+        # [START tool_declaration]
+        tool = AzureAISearchTool(
+            azure_ai_search=AzureAISearchToolResource(
+                indexes=[
+                    AISearchIndexResource(
+                        project_connection_id=os.environ["AI_SEARCH_PROJECT_CONNECTION_ID"],
+                        index_name=os.environ["AI_SEARCH_INDEX_NAME"],
+                        query_type=AzureAISearchQueryType.SIMPLE,
+                    ),
+                ]
+            )
         )
-    )
-    # [END tool_declaration]
+        # [END tool_declaration]
 
-    agent = project_client.agents.create_version(
-        agent_name="MyAgent",
-        definition=PromptAgentDefinition(
-            model=os.environ["FOUNDRY_MODEL_NAME"],
-            instructions="""You are a helpful assistant. You must always provide citations for
-            answers using the tool and render them as: `\u3010message_idx:search_idx\u2020source\u3011`.""",
-            tools=[tool],
-        ),
-        description="You are a helpful agent.",
-    )
-    print(f"Agent created (id: {agent.id}, name: {agent.name}, version: {agent.version})")
+        agent = project_client.agents.create_version(
+            agent_name="MyAgent",
+            definition=PromptAgentDefinition(
+                model=os.environ["FOUNDRY_MODEL_NAME"],
+                instructions="""You are a helpful assistant. You must always provide citations for
+                answers using the tool and render them as: `\u3010message_idx:search_idx\u2020source\u3011`.""",
+                tools=[tool],
+            ),
+            description="You are a helpful agent.",
+        )
+        print(f"Agent created (id: {agent.id}, name: {agent.name}, version: {agent.version})")
 
-    # Get user input from environment variable or prompt
-    user_input = os.environ.get("AI_SEARCH_USER_INPUT")
-    if not user_input:
-        user_input = input("Enter your question (e.g., 'Tell me about mental health services'): \n")
+        # Get user input from environment variable or prompt
+        user_input = os.environ.get("AI_SEARCH_USER_INPUT")
+        if not user_input:
+            user_input = input("Enter your question (e.g., 'Tell me about mental health services'): \n")
 
-    stream_response = openai_client.responses.create(
-        stream=True,
-        tool_choice="required",
-        input=user_input,
-        extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
-    )
+        stream_response = openai_client.responses.create(
+            stream=True,
+            tool_choice="required",
+            input=user_input,
+            extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
+        )
 
-    for event in stream_response:
-        if event.type == "response.created":
-            print(f"Follow-up response created with ID: {event.response.id}")
-        elif event.type == "response.output_text.delta":
-            print(f"Delta: {event.delta}")
-        elif event.type == "response.text.done":
-            print("\nFollow-up response done!")
-        elif event.type == "response.output_item.done":
-            if event.item.type == "message":
-                item = event.item
-                if item.content[-1].type == "output_text":
-                    text_content = item.content[-1]
-                    for annotation in text_content.annotations:
-                        if annotation.type == "url_citation":
-                            print(
-                                f"URL Citation: {annotation.url}, "
-                                f"Start index: {annotation.start_index}, "
-                                f"End index: {annotation.end_index}"
-                            )
-        elif event.type == "response.completed":
-            print("\nFollow-up completed!")
-            print(f"Agent response: {event.response.output_text}")
+        for event in stream_response:
+            if event.type == "response.created":
+                print(f"Follow-up response created with ID: {event.response.id}")
+            elif event.type == "response.output_text.delta":
+                print(f"Delta: {event.delta}")
+            elif event.type == "response.text.done":
+                print("\nFollow-up response done!")
+            elif event.type == "response.output_item.done":
+                if event.item.type == "message":
+                    item = event.item
+                    if item.content[-1].type == "output_text":
+                        text_content = item.content[-1]
+                        for annotation in text_content.annotations:
+                            if annotation.type == "url_citation":
+                                print(
+                                    f"URL Citation: {annotation.url}, "
+                                    f"Start index: {annotation.start_index}, "
+                                    f"End index: {annotation.end_index}"
+                                )
+            elif event.type == "response.completed":
+                print("\nFollow-up completed!")
+                print(f"Agent response: {event.response.output_text}")
 
-    print("\nCleaning up...")
-    project_client.agents.delete_version(agent_name=agent.name, agent_version=agent.version)
-    print("Agent deleted")
+        print("\nCleaning up...")
+        project_client.agents.delete_version(agent_name=agent.name, agent_version=agent.version)
+        print("Agent deleted")

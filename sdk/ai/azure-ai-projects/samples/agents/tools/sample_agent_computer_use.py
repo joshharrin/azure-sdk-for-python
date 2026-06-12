@@ -39,124 +39,127 @@ from computer_use_util import (  # pylint: disable=import-error
     handle_computer_action_and_take_screenshot,
     print_final_output,
 )
-from azure.identity import DefaultAzureCredential
+from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from azure.ai.projects import AIProjectClient
 from azure.ai.projects.models import PromptAgentDefinition, ComputerUsePreviewTool
 
 load_dotenv()
 
 endpoint = os.environ["FOUNDRY_PROJECT_ENDPOINT"]
+scope = "https://ai.azure.us/.default" if ".azure.us" in endpoint else "https://ai.azure.com/.default"
 
 with (
     DefaultAzureCredential() as credential,
-    AIProjectClient(endpoint=endpoint, credential=credential) as project_client,
-    project_client.get_openai_client() as openai_client,
+    AIProjectClient(endpoint=endpoint, credential=credential, credential_scopes=[scope]) as project_client,
 ):
-    # Initialize state machine
-    current_state = SearchState.INITIAL
+    api_key = get_bearer_token_provider(credential, scope)
 
-    # Load screenshot assets
-    try:
-        screenshots = load_screenshot_assets()
-        print("Successfully loaded screenshot assets")
-    except FileNotFoundError:
-        print("Failed to load required screenshot assets. Please ensure the asset files exist in ../assets/")
-        exit(1)  # pylint: disable=consider-using-sys-exit
+    with project_client.get_openai_client(api_key=api_key) as openai_client:
+        # Initialize state machine
+        current_state = SearchState.INITIAL
 
-    # [START tool_declaration]
-    tool = ComputerUsePreviewTool(display_width=1026, display_height=769, environment="windows")
-    # [END tool_declaration]
+        # Load screenshot assets
+        try:
+            screenshots = load_screenshot_assets()
+            print("Successfully loaded screenshot assets")
+        except FileNotFoundError:
+            print("Failed to load required screenshot assets. Please ensure the asset files exist in ../assets/")
+            exit(1)  # pylint: disable=consider-using-sys-exit
 
-    agent = project_client.agents.create_version(
-        agent_name="MyAgent",
-        definition=PromptAgentDefinition(
-            model=os.environ.get("COMPUTER_USE_MODEL_DEPLOYMENT_NAME", "computer-use-preview"),
-            instructions="""
-            You are a computer automation assistant.
+        # [START tool_declaration]
+        tool = ComputerUsePreviewTool(display_width=1026, display_height=769, environment="windows")
+        # [END tool_declaration]
 
-            Be direct and efficient. When you reach the search results page, read and describe the actual search result titles and descriptions you can see.
-            """,
-            tools=[tool],
-        ),
-        description="Computer automation agent with screen interaction capabilities.",
-    )
-    print(f"Agent created (id: {agent.id}, name: {agent.name}, version: {agent.version})")
+        agent = project_client.agents.create_version(
+            agent_name="MyAgent",
+            definition=PromptAgentDefinition(
+                model=os.environ.get("COMPUTER_USE_MODEL_DEPLOYMENT_NAME", "computer-use-preview"),
+                instructions="""
+                You are a computer automation assistant.
 
-    # Initial request with screenshot - start with Bing search page
-    print("Starting computer automation session (initial screenshot: cua_browser_search.png)...")
-    response = openai_client.responses.create(
-        input=[
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_text",
-                        "text": "I need you to help me search for 'OpenAI news'. Please type 'OpenAI news' and submit the search. Once you see search results, the task is complete.",
-                    },
-                    {
-                        "type": "input_image",
-                        "image_url": screenshots["browser_search"]["url"],
-                        "detail": "high",
-                    },  # Start with Bing search page
-                ],
-            }
-        ],
-        extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
-        truncation="auto",
-    )
+                Be direct and efficient. When you reach the search results page, read and describe the actual search result titles and descriptions you can see.
+                """,
+                tools=[tool],
+            ),
+            description="Computer automation agent with screen interaction capabilities.",
+        )
+        print(f"Agent created (id: {agent.id}, name: {agent.name}, version: {agent.version})")
 
-    print(f"Initial response received (ID: {response.id})")
-
-    # Main interaction loop with deterministic completion
-    max_iterations = 10  # Allow enough iterations for completion
-    iteration = 0
-
-    while True:
-        if iteration >= max_iterations:
-            print(f"\nReached maximum iterations ({max_iterations}). Stopping.")
-            break
-
-        iteration += 1
-        print(f"\n--- Iteration {iteration} ---")
-
-        # Check for computer calls in the response
-        computer_calls = [item for item in response.output if item.type == "computer_call"]
-
-        if not computer_calls:
-            print_final_output(response)
-            break
-
-        # Process the first computer call
-        computer_call = computer_calls[0]
-        action = computer_call.action
-        call_id = computer_call.call_id
-
-        print(f"Processing computer call (ID: {call_id})")
-
-        # Handle the action and get the screenshot info
-        screenshot_info, current_state = handle_computer_action_and_take_screenshot(action, current_state, screenshots)
-
-        print(f"Sending action result back to agent (using {screenshot_info['filename']})...")
-
-        # Regular response with just the screenshot
+        # Initial request with screenshot - start with Bing search page
+        print("Starting computer automation session (initial screenshot: cua_browser_search.png)...")
         response = openai_client.responses.create(
-            previous_response_id=response.id,
             input=[
                 {
-                    "call_id": call_id,
-                    "type": "computer_call_output",
-                    "output": {
-                        "type": "computer_screenshot",
-                        "image_url": screenshot_info["url"],
-                    },
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": "I need you to help me search for 'OpenAI news'. Please type 'OpenAI news' and submit the search. Once you see search results, the task is complete.",
+                        },
+                        {
+                            "type": "input_image",
+                            "image_url": screenshots["browser_search"]["url"],
+                            "detail": "high",
+                        },  # Start with Bing search page
+                    ],
                 }
             ],
             extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
             truncation="auto",
         )
 
-        print(f"Follow-up response received (ID: {response.id})")
+        print(f"Initial response received (ID: {response.id})")
 
-    print("\nCleaning up...")
-    project_client.agents.delete_version(agent_name=agent.name, agent_version=agent.version)
-    print("Agent deleted")
+        # Main interaction loop with deterministic completion
+        max_iterations = 10  # Allow enough iterations for completion
+        iteration = 0
+
+        while True:
+            if iteration >= max_iterations:
+                print(f"\nReached maximum iterations ({max_iterations}). Stopping.")
+                break
+
+            iteration += 1
+            print(f"\n--- Iteration {iteration} ---")
+
+            # Check for computer calls in the response
+            computer_calls = [item for item in response.output if item.type == "computer_call"]
+
+            if not computer_calls:
+                print_final_output(response)
+                break
+
+            # Process the first computer call
+            computer_call = computer_calls[0]
+            action = computer_call.action
+            call_id = computer_call.call_id
+
+            print(f"Processing computer call (ID: {call_id})")
+
+            # Handle the action and get the screenshot info
+            screenshot_info, current_state = handle_computer_action_and_take_screenshot(action, current_state, screenshots)
+
+            print(f"Sending action result back to agent (using {screenshot_info['filename']})...")
+
+            # Regular response with just the screenshot
+            response = openai_client.responses.create(
+                previous_response_id=response.id,
+                input=[
+                    {
+                        "call_id": call_id,
+                        "type": "computer_call_output",
+                        "output": {
+                            "type": "computer_screenshot",
+                            "image_url": screenshot_info["url"],
+                        },
+                    }
+                ],
+                extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
+                truncation="auto",
+            )
+
+            print(f"Follow-up response received (ID: {response.id})")
+
+        print("\nCleaning up...")
+        project_client.agents.delete_version(agent_name=agent.name, agent_version=agent.version)
+        print("Agent deleted")

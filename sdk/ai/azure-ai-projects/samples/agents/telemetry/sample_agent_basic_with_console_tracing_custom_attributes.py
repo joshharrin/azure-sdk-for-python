@@ -39,13 +39,14 @@ from opentelemetry.sdk.trace import TracerProvider, SpanProcessor, ReadableSpan,
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor, ConsoleSpanExporter
 from azure.ai.projects.telemetry import AIProjectInstrumentor
 
-from azure.identity import DefaultAzureCredential
+from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from azure.ai.projects import AIProjectClient
 from azure.ai.projects.models import PromptAgentDefinition
 
 load_dotenv()
 
 endpoint = os.environ["FOUNDRY_PROJECT_ENDPOINT"]
+scope = "https://ai.azure.us/.default" if ".azure.us" in endpoint else "https://ai.azure.com/.default"
 
 
 # Define the custom span processor that is used for adding the custom
@@ -91,7 +92,7 @@ scenario = os.path.basename(__file__)
 with tracer.start_as_current_span(scenario):
     with (
         DefaultAzureCredential() as credential,
-        AIProjectClient(endpoint=endpoint, credential=credential) as client,
+        AIProjectClient(endpoint=endpoint, credential=credential, credential_scopes=[scope]) as client,
     ):
 
         agent_definition = PromptAgentDefinition(

@@ -27,62 +27,68 @@ USAGE:
        the "Models + endpoints" tab in your Microsoft Foundry project.
 """
 
-import asyncio
 import os
+import sys
+from pathlib import Path
+import asyncio
 from dotenv import load_dotenv
-from azure.identity.aio import DefaultAzureCredential
+
+from azure.identity.aio import DefaultAzureCredential, get_bearer_token_provider
 from azure.ai.projects.aio import AIProjectClient
 from azure.ai.projects.models import PromptAgentDefinition
 
 load_dotenv()
 
 endpoint = os.environ["FOUNDRY_PROJECT_ENDPOINT"]
+scope = "https://ai.azure.us/.default" if ".azure.us" in endpoint else "https://ai.azure.com/.default"
 
 
 async def main() -> None:
     async with (
         DefaultAzureCredential() as credential,
-        AIProjectClient(endpoint=endpoint, credential=credential) as project_client,
-        project_client.get_openai_client() as openai_client,
+        AIProjectClient(endpoint=endpoint, credential=credential, credential_scopes=[scope]) as project_client,
     ):
+        api_key = get_bearer_token_provider(credential, scope)
 
-        agent = await project_client.agents.create_version(
-            agent_name="MyAgent",
-            definition=PromptAgentDefinition(
-                model=os.environ["FOUNDRY_MODEL_NAME"],
-                instructions="You are a helpful assistant that answers general questions.",
-            ),
-        )
-        print(f"Agent created (name: {agent.name}, id: {agent.id}, version: {agent.version})")
+        async with project_client.get_openai_client(api_key=api_key) as openai_client:
 
-        conversation = await openai_client.conversations.create(
-            items=[{"type": "message", "role": "user", "content": "What is the size of France in square miles?"}],
-        )
-        print(f"Created conversation with initial user message (id: {conversation.id})")
+            agent = await project_client.agents.create_version(
+                agent_name="MyAgent",
+                definition=PromptAgentDefinition(
+                    model=os.environ["FOUNDRY_MODEL_NAME"],
+                    instructions="You are a helpful assistant that answers general questions.",
+                ),
+            )
+            print(f"Agent created (name: {agent.name}, id: {agent.id}, version: {agent.version})")
 
-        response = await openai_client.responses.create(
-            conversation=conversation.id,
-            extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
-        )
-        print(f"Response output: {response.output_text}")
+            conversation = await openai_client.conversations.create(
+                items=[{"type": "message", "role": "user", "content": "What is the size of France in square miles?"}],
+            )
+            print(f"Created conversation with initial user message (id: {conversation.id})")
 
-        await openai_client.conversations.items.create(
-            conversation_id=conversation.id,
-            items=[{"type": "message", "role": "user", "content": "And what is the capital city?"}],
-        )
-        print("Added a second user message to the conversation")
+            response = await openai_client.responses.create(
+                conversation=conversation.id,
+                extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
+            )
+            print(f"Response output: {response.output_text}")
 
-        response = await openai_client.responses.create(
-            conversation=conversation.id,
-            extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
-        )
-        print(f"Response output: {response.output_text}")
+            await openai_client.conversations.items.create(
+                conversation_id=conversation.id,
+                items=[{"type": "message", "role": "user", "content": "And what is the capital city?"}],
+            )
+            print("Added a second user message to the conversation")
 
-        await openai_client.conversations.delete(conversation_id=conversation.id)
-        print("Conversation deleted")
+            response = await openai_client.responses.create(
+                conversation=conversation.id,
+                extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
+            )
+            print(f"Response output: {response.output_text}")
 
-        await project_client.agents.delete_version(agent_name=agent.name, agent_version=agent.version)
-        print("Agent deleted")
+            await openai_client.conversations.delete(conversation_id=conversation.id)
+            print("Conversation deleted")
+
+            await project_client.agents.delete_version(agent_name=agent.name, agent_version=agent.version)
+            print("Agent deleted")
 
 
 if __name__ == "__main__":

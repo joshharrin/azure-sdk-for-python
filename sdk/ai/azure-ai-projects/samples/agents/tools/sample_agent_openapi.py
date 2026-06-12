@@ -27,7 +27,7 @@ import os
 from typing import Any, cast
 import jsonref
 from dotenv import load_dotenv
-from azure.identity import DefaultAzureCredential
+from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from azure.ai.projects import AIProjectClient
 from azure.ai.projects.models import (
     PromptAgentDefinition,
@@ -39,45 +39,48 @@ from azure.ai.projects.models import (
 load_dotenv()
 
 endpoint = os.environ["FOUNDRY_PROJECT_ENDPOINT"]
+scope = "https://ai.azure.us/.default" if ".azure.us" in endpoint else "https://ai.azure.com/.default"
 
 with (
     DefaultAzureCredential() as credential,
-    AIProjectClient(endpoint=endpoint, credential=credential) as project_client,
-    project_client.get_openai_client() as openai_client,
+    AIProjectClient(endpoint=endpoint, credential=credential, credential_scopes=[scope]) as project_client,
 ):
+    api_key = get_bearer_token_provider(credential, scope)
 
-    weather_asset_file_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../assets/weather_openapi.json"))
+    with project_client.get_openai_client(api_key=api_key) as openai_client:
 
-    # [START tool_declaration]
-    with open(weather_asset_file_path, "r", encoding="utf-8") as f:
-        openapi_weather = cast(dict[str, Any], jsonref.loads(f.read()))
+        weather_asset_file_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../assets/weather_openapi.json"))
 
-    tool = OpenApiTool(
-        openapi=OpenApiFunctionDefinition(
-            name="get_weather",
-            spec=openapi_weather,
-            description="Retrieve weather information for a location.",
-            auth=OpenApiAnonymousAuthDetails(),
+        # [START tool_declaration]
+        with open(weather_asset_file_path, "r", encoding="utf-8") as f:
+            openapi_weather = cast(dict[str, Any], jsonref.loads(f.read()))
+
+        tool = OpenApiTool(
+            openapi=OpenApiFunctionDefinition(
+                name="get_weather",
+                spec=openapi_weather,
+                description="Retrieve weather information for a location.",
+                auth=OpenApiAnonymousAuthDetails(),
+            )
         )
-    )
-    # [END tool_declaration]
+        # [END tool_declaration]
 
-    agent = project_client.agents.create_version(
-        agent_name="MyAgent",
-        definition=PromptAgentDefinition(
-            model=os.environ["FOUNDRY_MODEL_NAME"],
-            instructions="You are a helpful assistant.",
-            tools=[tool],
-        ),
-    )
-    print(f"Agent created (id: {agent.id}, name: {agent.name}, version: {agent.version})")
+        agent = project_client.agents.create_version(
+            agent_name="MyAgent",
+            definition=PromptAgentDefinition(
+                model=os.environ["FOUNDRY_MODEL_NAME"],
+                instructions="You are a helpful assistant.",
+                tools=[tool],
+            ),
+        )
+        print(f"Agent created (id: {agent.id}, name: {agent.name}, version: {agent.version})")
 
-    response = openai_client.responses.create(
-        input="Use the OpenAPI tool to print out, what is the weather in Seattle today.",
-        extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
-    )
-    print(f"Agent response: {response.output_text}")
+        response = openai_client.responses.create(
+            input="Use the OpenAPI tool to print out, what is the weather in Seattle today.",
+            extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
+        )
+        print(f"Agent response: {response.output_text}")
 
-    print("\nCleaning up...")
-    project_client.agents.delete_version(agent_name=agent.name, agent_version=agent.version)
-    print("Agent deleted")
+        print("\nCleaning up...")
+        project_client.agents.delete_version(agent_name=agent.name, agent_version=agent.version)
+        print("Agent deleted")

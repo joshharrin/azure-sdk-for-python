@@ -28,7 +28,7 @@ import os
 import json
 from dotenv import load_dotenv
 from openai.types.responses.response_input_param import FunctionCallOutput, ResponseInputParam
-from azure.identity import DefaultAzureCredential
+from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from azure.ai.projects import AIProjectClient
 from azure.ai.projects.models import PromptAgentDefinition, FunctionTool
 
@@ -44,73 +44,75 @@ endpoint = os.environ["FOUNDRY_PROJECT_ENDPOINT"]
 
 with (
     DefaultAzureCredential() as credential,
-    AIProjectClient(endpoint=endpoint, credential=credential) as project_client,
-    project_client.get_openai_client() as openai_client,
+    AIProjectClient(endpoint=endpoint, credential=credential, credential_scopes=[scope]) as project_client,
 ):
+    api_key = get_bearer_token_provider(credential, scope)
 
-    # [START tool_declaration]
-    tool = FunctionTool(
-        name="get_horoscope",
-        parameters={
-            "type": "object",
-            "properties": {
-                "sign": {
-                    "type": "string",
-                    "description": "An astrological sign like Taurus or Aquarius",
+    with project_client.get_openai_client(api_key=api_key) as openai_client:
+
+        # [START tool_declaration]
+        tool = FunctionTool(
+            name="get_horoscope",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "sign": {
+                        "type": "string",
+                        "description": "An astrological sign like Taurus or Aquarius",
+                    },
                 },
+                "required": ["sign"],
+                "additionalProperties": False,
             },
-            "required": ["sign"],
-            "additionalProperties": False,
-        },
-        description="Get today's horoscope for an astrological sign.",
-        strict=True,
-    )
-    # [END tool_declaration]
+            description="Get today's horoscope for an astrological sign.",
+            strict=True,
+        )
+        # [END tool_declaration]
 
-    agent = project_client.agents.create_version(
-        agent_name="MyAgent",
-        definition=PromptAgentDefinition(
-            model=os.environ["FOUNDRY_MODEL_NAME"],
-            instructions="You are a helpful assistant that can use function tools.",
-            tools=[tool],
-        ),
-    )
+        agent = project_client.agents.create_version(
+            agent_name="MyAgent",
+            definition=PromptAgentDefinition(
+                model=os.environ["FOUNDRY_MODEL_NAME"],
+                instructions="You are a helpful assistant that can use function tools.",
+                tools=[tool],
+            ),
+        )
 
-    # Prompt the model with tools defined
-    response = openai_client.responses.create(
-        input="What is my horoscope? I am an Aquarius.",
-        extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
-    )
-    print(f"Response output: {response.output_text}")
+        # Prompt the model with tools defined
+        response = openai_client.responses.create(
+            input="What is my horoscope? I am an Aquarius.",
+            extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
+        )
+        print(f"Response output: {response.output_text}")
 
-    input_list: ResponseInputParam = []
-    # Process function calls
-    for item in response.output:
-        if item.type == "function_call":
-            if item.name == "get_horoscope":
-                # Execute the function logic for get_horoscope
-                horoscope = get_horoscope(**json.loads(item.arguments))
+        input_list: ResponseInputParam = []
+        # Process function calls
+        for item in response.output:
+            if item.type == "function_call":
+                if item.name == "get_horoscope":
+                    # Execute the function logic for get_horoscope
+                    horoscope = get_horoscope(**json.loads(item.arguments))
 
-                # Provide function call results to the model
-                input_list.append(
-                    FunctionCallOutput(
-                        type="function_call_output",
-                        call_id=item.call_id,
-                        output=json.dumps({"horoscope": horoscope}),
+                    # Provide function call results to the model
+                    input_list.append(
+                        FunctionCallOutput(
+                            type="function_call_output",
+                            call_id=item.call_id,
+                            output=json.dumps({"horoscope": horoscope}),
+                        )
                     )
-                )
 
-    print("Final input:")
-    print(input_list)
+        print("Final input:")
+        print(input_list)
 
-    response = openai_client.responses.create(
-        input=input_list,
-        previous_response_id=response.id,
-        extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
-    )
+        response = openai_client.responses.create(
+            input=input_list,
+            previous_response_id=response.id,
+            extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
+        )
 
-    print(f"Agent response: {response.output_text}")
+        print(f"Agent response: {response.output_text}")
 
-    print("\nCleaning up...")
-    project_client.agents.delete_version(agent_name=agent.name, agent_version=agent.version)
-    print("Agent deleted")
+        print("\nCleaning up...")
+        project_client.agents.delete_version(agent_name=agent.name, agent_version=agent.version)
+        print("Agent deleted")

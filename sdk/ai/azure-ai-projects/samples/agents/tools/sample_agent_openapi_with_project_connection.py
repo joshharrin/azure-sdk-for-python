@@ -30,7 +30,7 @@ import os
 from typing import Any, cast
 import jsonref
 from dotenv import load_dotenv
-from azure.identity import DefaultAzureCredential
+from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from azure.ai.projects import AIProjectClient
 from azure.ai.projects.models import (
     PromptAgentDefinition,
@@ -43,52 +43,55 @@ from azure.ai.projects.models import (
 load_dotenv()
 
 endpoint = os.environ["FOUNDRY_PROJECT_ENDPOINT"]
+scope = "https://ai.azure.us/.default" if ".azure.us" in endpoint else "https://ai.azure.com/.default"
 
 with (
     DefaultAzureCredential() as credential,
-    AIProjectClient(endpoint=endpoint, credential=credential) as project_client,
-    project_client.get_openai_client() as openai_client,
+    AIProjectClient(endpoint=endpoint, credential=credential, credential_scopes=[scope]) as project_client,
 ):
+    api_key = get_bearer_token_provider(credential, scope)
 
-    tripadvisor_asset_file_path = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "../assets/tripadvisor_openapi.json")
-    )
+    with project_client.get_openai_client(api_key=api_key) as openai_client:
 
-    # [START tool_declaration]
-    with open(tripadvisor_asset_file_path, "r", encoding="utf-8") as f:
-        openapi_tripadvisor = cast(dict[str, Any], jsonref.loads(f.read()))
+        tripadvisor_asset_file_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "../assets/tripadvisor_openapi.json")
+        )
 
-    tool = OpenApiTool(
-        openapi=OpenApiFunctionDefinition(
-            name="tripadvisor",
-            spec=openapi_tripadvisor,
-            description="Trip Advisor API to get travel information",
-            auth=OpenApiProjectConnectionAuthDetails(
-                security_scheme=OpenApiProjectConnectionSecurityScheme(
-                    project_connection_id=os.environ["OPENAPI_PROJECT_CONNECTION_ID"]
-                )
+        # [START tool_declaration]
+        with open(tripadvisor_asset_file_path, "r", encoding="utf-8") as f:
+            openapi_tripadvisor = cast(dict[str, Any], jsonref.loads(f.read()))
+
+        tool = OpenApiTool(
+            openapi=OpenApiFunctionDefinition(
+                name="tripadvisor",
+                spec=openapi_tripadvisor,
+                description="Trip Advisor API to get travel information",
+                auth=OpenApiProjectConnectionAuthDetails(
+                    security_scheme=OpenApiProjectConnectionSecurityScheme(
+                        project_connection_id=os.environ["OPENAPI_PROJECT_CONNECTION_ID"]
+                    )
+                ),
+            )
+        )
+        # [END tool_declaration]
+
+        agent = project_client.agents.create_version(
+            agent_name="MyAgent",
+            definition=PromptAgentDefinition(
+                model=os.environ["FOUNDRY_MODEL_NAME"],
+                instructions="You are a helpful assistant.",
+                tools=[tool],
             ),
         )
-    )
-    # [END tool_declaration]
+        print(f"Agent created (id: {agent.id}, name: {agent.name}, version: {agent.version})")
 
-    agent = project_client.agents.create_version(
-        agent_name="MyAgent",
-        definition=PromptAgentDefinition(
-            model=os.environ["FOUNDRY_MODEL_NAME"],
-            instructions="You are a helpful assistant.",
-            tools=[tool],
-        ),
-    )
-    print(f"Agent created (id: {agent.id}, name: {agent.name}, version: {agent.version})")
+        response = openai_client.responses.create(
+            input="Recommend me 5 top hotels in the United States",
+            extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
+        )
+        # The response to the question may contain non ASCII letters. To avoid error, encode and re decode them.
+        print(f"Response created: {response.output_text.encode().decode('ascii', errors='ignore')}")
 
-    response = openai_client.responses.create(
-        input="Recommend me 5 top hotels in the United States",
-        extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
-    )
-    # The response to the question may contain non ASCII letters. To avoid error, encode and re decode them.
-    print(f"Response created: {response.output_text.encode().decode('ascii', errors='ignore')}")
-
-    print("\nCleaning up...")
-    project_client.agents.delete_version(agent_name=agent.name, agent_version=agent.version)
-    print("Agent deleted")
+        print("\nCleaning up...")
+        project_client.agents.delete_version(agent_name=agent.name, agent_version=agent.version)
+        print("Agent deleted")

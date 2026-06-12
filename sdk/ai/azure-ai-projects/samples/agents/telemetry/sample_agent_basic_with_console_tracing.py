@@ -42,13 +42,16 @@ from azure.ai.projects.telemetry import AIProjectInstrumentor
 
 # [END imports_for_console_tracing]
 
-from azure.identity import DefaultAzureCredential
+from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from azure.ai.projects import AIProjectClient
 from azure.ai.projects.models import PromptAgentDefinition
 from openai.types.responses.response_input_text import ResponseInputText
 from openai.types.responses.response_output_text import ResponseOutputText
 
 load_dotenv()
+
+endpoint = os.environ["FOUNDRY_PROJECT_ENDPOINT"]
+scope = "https://ai.azure.us/.default" if ".azure.us" in endpoint else "https://ai.azure.com/.default"
 
 
 def display_conversation_item(item: Any) -> None:  # pylint: disable=redefined-outer-name
@@ -91,40 +94,42 @@ with tracer.start_as_current_span(scenario):
     # [END create_span_for_scenario]
     with (
         DefaultAzureCredential() as credential,
-        AIProjectClient(endpoint=os.environ["FOUNDRY_PROJECT_ENDPOINT"], credential=credential) as project_client,
-        project_client.get_openai_client() as openai_client,
+        AIProjectClient(endpoint=endpoint, credential=credential, credential_scopes=[scope]) as project_client,
     ):
-        agent_definition = PromptAgentDefinition(
-            model=os.environ["FOUNDRY_MODEL_NAME"],
-            instructions="You are a helpful assistant that answers general questions",
-        )
+        api_key = get_bearer_token_provider(credential, scope)
 
-        agent = project_client.agents.create_version(agent_name="MyAgent", definition=agent_definition)
-        print(f"Agent created (id: {agent.id}, name: {agent.name}, version: {agent.version})")
+        with project_client.get_openai_client(api_key=api_key) as openai_client:
+            agent_definition = PromptAgentDefinition(
+                model=os.environ["FOUNDRY_MODEL_NAME"],
+                instructions="You are a helpful assistant that answers general questions",
+            )
 
-        conversation = openai_client.conversations.create()
+            agent = project_client.agents.create_version(agent_name="MyAgent", definition=agent_definition)
+            print(f"Agent created (id: {agent.id}, name: {agent.name}, version: {agent.version})")
 
-        request = "Hello, tell me a joke."
-        response = openai_client.responses.create(
-            conversation=conversation.id,
-            extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
-            input=request,
-        )
-        print(f"Answer: {response.output}")
+            conversation = openai_client.conversations.create()
 
-        response = openai_client.responses.create(
-            conversation=conversation.id,
-            input="Tell another one about computers.",
-            extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
-        )
-        print(f"Answer: {response.output}")
+            request = "Hello, tell me a joke."
+            response = openai_client.responses.create(
+                conversation=conversation.id,
+                extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
+                input=request,
+            )
+            print(f"Answer: {response.output}")
 
-        print("\n📋 Listing conversation items...")
-        items = openai_client.conversations.items.list(conversation_id=conversation.id)
+            response = openai_client.responses.create(
+                conversation=conversation.id,
+                input="Tell another one about computers.",
+                extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
+            )
+            print(f"Answer: {response.output}")
 
-        # Print all the items
-        for item in items:
-            display_conversation_item(item)
+            print("\n📋 Listing conversation items...")
+            items = openai_client.conversations.items.list(conversation_id=conversation.id)
 
-        project_client.agents.delete_version(agent_name=agent.name, agent_version=agent.version)
-        print("Agent deleted")
+            # Print all the items
+            for item in items:
+                display_conversation_item(item)
+
+            project_client.agents.delete_version(agent_name=agent.name, agent_version=agent.version)
+            print("Agent deleted")

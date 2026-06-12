@@ -31,43 +31,48 @@ USAGE:
 import os
 from dotenv import load_dotenv
 from agent_retrieve_helper import create_and_retrieve_agent_and_conversation  # pylint: disable=import-error
-from azure.identity import DefaultAzureCredential
+from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from azure.ai.projects import AIProjectClient
 
 load_dotenv()
 
 endpoint = os.environ["FOUNDRY_PROJECT_ENDPOINT"]
 model = os.environ["FOUNDRY_MODEL_NAME"]
+scope = "https://ai.azure.us/.default" if ".azure.us" in endpoint else "https://ai.azure.com/.default"
 
 with (
     DefaultAzureCredential() as credential,
-    AIProjectClient(endpoint=endpoint, credential=credential) as project_client,
-    # Creates prerequisite resources and yields (agent_name, conversation_id).
-    # Then automatically deletes the created agent version when this context manager exits.
-    create_and_retrieve_agent_and_conversation(project_client=project_client, model=model) as (
-        agent_name,
-        conversation_id,
-    ),
-    project_client.get_openai_client() as openai_client,
+    AIProjectClient(endpoint=endpoint, credential=credential, credential_scopes=[scope]) as project_client,
 ):
+    api_key = get_bearer_token_provider(credential, scope)
 
-    # Retrieve latest version for the prerequisite agent.
-    agent = project_client.agents.get(agent_name=agent_name)
-    print(f"Agent retrieved (id: {agent.id}, name: {agent.name}, version: {agent.versions.latest.version})")
+    with (
+        # Creates prerequisite resources and yields (agent_name, conversation_id).
+        # Then automatically deletes the created agent version when this context manager exits.
+        create_and_retrieve_agent_and_conversation(project_client=project_client, model=model, api_key=api_key) as (
+            agent_name,
+            conversation_id,
+        ),
+        project_client.get_openai_client(api_key=api_key) as openai_client,
+    ):
 
-    # Retrieve the prerequisite conversation.
-    conversation = openai_client.conversations.retrieve(conversation_id=conversation_id)
-    print(f"Retrieved conversation (id: {conversation.id})")
+        # Retrieve latest version for the prerequisite agent.
+        agent = project_client.agents.get(agent_name=agent_name)
+        print(f"Agent retrieved (id: {agent.id}, name: {agent.name}, version: {agent.versions.latest.version})")
 
-    # Add a new user text message to the conversation
-    openai_client.conversations.items.create(
-        conversation_id=conversation.id,
-        items=[{"type": "message", "role": "user", "content": "How many feet are in a mile?"}],
-    )
-    print("Added a user message to the conversation")
+        # Retrieve the prerequisite conversation.
+        conversation = openai_client.conversations.retrieve(conversation_id=conversation_id)
+        print(f"Retrieved conversation (id: {conversation.id})")
 
-    response = openai_client.responses.create(
-        conversation=conversation.id,
-        extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
-    )
-    print(f"Response output: {response.output_text}")
+        # Add a new user text message to the conversation
+        openai_client.conversations.items.create(
+            conversation_id=conversation.id,
+            items=[{"type": "message", "role": "user", "content": "How many feet are in a mile?"}],
+        )
+        print("Added a user message to the conversation")
+
+        response = openai_client.responses.create(
+            conversation=conversation.id,
+            extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
+        )
+        print(f"Response output: {response.output_text}")

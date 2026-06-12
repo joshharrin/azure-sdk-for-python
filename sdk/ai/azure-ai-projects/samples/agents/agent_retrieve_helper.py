@@ -12,19 +12,18 @@ when the context exits.
 """
 
 from contextlib import contextmanager, asynccontextmanager
-from typing import Generator, AsyncGenerator
+from typing import AsyncGenerator, Callable, Generator
 
 from azure.ai.projects.models import PromptAgentDefinition
 from azure.ai.projects import AIProjectClient
 from azure.ai.projects.aio import AIProjectClient as AsyncAIProjectClient
 
-
 @contextmanager
 def create_and_retrieve_agent_and_conversation(
-    project_client: AIProjectClient, model: str
+    project_client: AIProjectClient, model: str, api_key: Callable[[], str]
 ) -> Generator[tuple[str, str], None, None]:
 
-    with (project_client.get_openai_client() as openai_client,):
+    with (project_client.get_openai_client(api_key=api_key) as openai_client,):
         agent = project_client.agents.create_version(
             agent_name="MyAgent",
             definition=PromptAgentDefinition(
@@ -46,10 +45,10 @@ def create_and_retrieve_agent_and_conversation(
 
 @asynccontextmanager
 async def create_and_retrieve_agent_and_conversation_async(
-    project_client: AsyncAIProjectClient, model: str
+    project_client: AsyncAIProjectClient, model: str, api_key: Callable[[], str]
 ) -> AsyncGenerator[tuple[str, str], None]:
 
-    async with (project_client.get_openai_client() as openai_client,):
+    async with (project_client.get_openai_client(api_key=api_key) as openai_client,):
         agent = await project_client.agents.create_version(
             agent_name="MyAgent",
             definition=PromptAgentDefinition(

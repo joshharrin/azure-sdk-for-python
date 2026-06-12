@@ -26,7 +26,7 @@ USAGE:
 import os
 from dotenv import load_dotenv
 
-from azure.identity import DefaultAzureCredential
+from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from azure.ai.projects import AIProjectClient
 from azure.ai.projects.models import (
     PromptAgentDefinition,
@@ -36,37 +36,40 @@ from azure.ai.projects.models import (
 load_dotenv()
 
 endpoint = os.environ["FOUNDRY_PROJECT_ENDPOINT"]
+scope = "https://ai.azure.us/.default" if ".azure.us" in endpoint else "https://ai.azure.com/.default"
 
 with (
     DefaultAzureCredential() as credential,
-    AIProjectClient(endpoint=endpoint, credential=credential, allow_preview=True) as project_client,
-    project_client.get_openai_client() as openai_client,
+    AIProjectClient(endpoint=endpoint, credential=credential, credential_scopes=[scope], allow_preview=True) as project_client,
 ):
-    # Create Teacher Agent
-    teacher_agent = project_client.agents.create_version(
-        agent_name="teacher-agent",
-        definition=PromptAgentDefinition(
-            model=os.environ["FOUNDRY_MODEL_NAME"],
-            instructions="""You are a teacher that create pre-school math question for student and check answer.
-                            If the answer is correct, you stop the conversation by saying [COMPLETE].
-                            If the answer is wrong, you ask student to fix it.""",
-        ),
-    )
-    print(f"Agent created (id: {teacher_agent.id}, name: {teacher_agent.name}, version: {teacher_agent.version})")
+    api_key = get_bearer_token_provider(credential, scope)
 
-    # Create Student Agent
-    student_agent = project_client.agents.create_version(
-        agent_name="student-agent",
-        definition=PromptAgentDefinition(
-            model=os.environ["FOUNDRY_MODEL_NAME"],
-            instructions="""You are a student who answers questions from the teacher.
-                            When the teacher gives you a question, you answer it.""",
-        ),
-    )
-    print(f"Agent created (id: {student_agent.id}, name: {student_agent.name}, version: {student_agent.version})")
+    with project_client.get_openai_client(api_key=api_key) as openai_client:
+        # Create Teacher Agent
+        teacher_agent = project_client.agents.create_version(
+            agent_name="teacher-agent",
+            definition=PromptAgentDefinition(
+                model=os.environ["FOUNDRY_MODEL_NAME"],
+                instructions="""You are a teacher that create pre-school math question for student and check answer.
+                                If the answer is correct, you stop the conversation by saying [COMPLETE].
+                                If the answer is wrong, you ask student to fix it.""",
+            ),
+        )
+        print(f"Agent created (id: {teacher_agent.id}, name: {teacher_agent.name}, version: {teacher_agent.version})")
 
-    # Create Multi-Agent Workflow
-    workflow_yaml = """
+        # Create Student Agent
+        student_agent = project_client.agents.create_version(
+            agent_name="student-agent",
+            definition=PromptAgentDefinition(
+                model=os.environ["FOUNDRY_MODEL_NAME"],
+                instructions="""You are a student who answers questions from the teacher.
+                                When the teacher gives you a question, you answer it.""",
+            ),
+        )
+        print(f"Agent created (id: {student_agent.id}, name: {student_agent.name}, version: {student_agent.version})")
+
+        # Create Multi-Agent Workflow
+        workflow_yaml = """
 kind: workflow
 trigger:
   kind: OnConversationStart

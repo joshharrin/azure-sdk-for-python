@@ -32,48 +32,55 @@ import os
 import asyncio
 from dotenv import load_dotenv
 from agent_retrieve_helper import create_and_retrieve_agent_and_conversation_async  # pylint: disable=import-error
-from azure.identity.aio import DefaultAzureCredential
+from azure.identity.aio import DefaultAzureCredential, get_bearer_token_provider
 from azure.ai.projects.aio import AIProjectClient
 
 load_dotenv()
 
 endpoint = os.environ["FOUNDRY_PROJECT_ENDPOINT"]
 model = os.environ["FOUNDRY_MODEL_NAME"]
+scope = "https://ai.azure.us/.default" if ".azure.us" in endpoint else "https://ai.azure.com/.default"
 
 
 async def main():
     async with (
         DefaultAzureCredential() as credential,
-        AIProjectClient(endpoint=endpoint, credential=credential) as project_client,
-        # Creates prerequisite resources and yields (agent_name, conversation_id).
-        # Then automatically deletes the created agent version when this context manager exits.
-        create_and_retrieve_agent_and_conversation_async(project_client=project_client, model=model) as (
-            agent_name,
-            conversation_id,
-        ),
-        project_client.get_openai_client() as openai_client,
+        AIProjectClient(endpoint=endpoint, credential=credential, credential_scopes=[scope]) as project_client,
     ):
+        api_key = get_bearer_token_provider(credential, scope)
 
-        # Retrieve latest version for the prerequisite agent.
-        agent = await project_client.agents.get(agent_name=agent_name)
-        print(f"Agent retrieved (id: {agent.id}, name: {agent.name}, version: {agent.versions.latest.version})")
+        async with (
+            # Creates prerequisite resources and yields (agent_name, conversation_id).
+            # Then automatically deletes the created agent version when this context manager exits.
+            create_and_retrieve_agent_and_conversation_async(
+                project_client=project_client, model=model, api_key=api_key
+            ) as (
+                agent_name,
+                conversation_id,
+            ),
+            project_client.get_openai_client(api_key=api_key) as openai_client,
+        ):
 
-        # Retrieve the prerequisite conversation.
-        conversation = await openai_client.conversations.retrieve(conversation_id=conversation_id)
-        print(f"Retrieved conversation (id: {conversation.id})")
+            # Retrieve latest version for the prerequisite agent.
+            agent = await project_client.agents.get(agent_name=agent_name)
+            print(f"Agent retrieved (id: {agent.id}, name: {agent.name}, version: {agent.versions.latest.version})")
 
-        # Add a new user text message to the conversation
-        await openai_client.conversations.items.create(
-            conversation_id=conversation.id,
-            items=[{"type": "message", "role": "user", "content": "How many feet are in a mile?"}],
-        )
-        print("Added a user message to the conversation")
+            # Retrieve the prerequisite conversation.
+            conversation = await openai_client.conversations.retrieve(conversation_id=conversation_id)
+            print(f"Retrieved conversation (id: {conversation.id})")
 
-        response = await openai_client.responses.create(
-            conversation=conversation.id,
-            extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
-        )
-        print(f"Response output: {response.output_text}")
+            # Add a new user text message to the conversation
+            await openai_client.conversations.items.create(
+                conversation_id=conversation.id,
+                items=[{"type": "message", "role": "user", "content": "How many feet are in a mile?"}],
+            )
+            print("Added a user message to the conversation")
+
+            response = await openai_client.responses.create(
+                conversation=conversation.id,
+                extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
+            )
+            print(f"Response output: {response.output_text}")
 
 
 if __name__ == "__main__":

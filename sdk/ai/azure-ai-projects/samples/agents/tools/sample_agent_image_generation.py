@@ -47,62 +47,65 @@ import os
 import tempfile
 from dotenv import load_dotenv
 
-from azure.identity import DefaultAzureCredential
+from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from azure.ai.projects import AIProjectClient
 from azure.ai.projects.models import PromptAgentDefinition, ImageGenTool
 
 load_dotenv()
 
 endpoint = os.environ["FOUNDRY_PROJECT_ENDPOINT"]
+scope = "https://ai.azure.us/.default" if ".azure.us" in endpoint else "https://ai.azure.com/.default"
 
 with (
     DefaultAzureCredential() as credential,
-    AIProjectClient(endpoint=endpoint, credential=credential) as project_client,
-    project_client.get_openai_client() as openai_client,
+    AIProjectClient(endpoint=endpoint, credential=credential, credential_scopes=[scope]) as project_client,
 ):
-    image_generation_model = os.environ["IMAGE_GENERATION_MODEL_DEPLOYMENT_NAME"]
+    api_key = get_bearer_token_provider(credential, scope)
 
-    # [START tool_declaration]
-    tool = ImageGenTool(
-        model=image_generation_model,  # Model such as "gpt-image-1"
-        quality="low",
-        size="1024x1024",
-    )
-    # [END tool_declaration]
+    with project_client.get_openai_client(api_key=api_key) as openai_client:
+        image_generation_model = os.environ["IMAGE_GENERATION_MODEL_DEPLOYMENT_NAME"]
 
-    agent = project_client.agents.create_version(
-        agent_name="MyAgent",
-        definition=PromptAgentDefinition(
-            model=os.environ["FOUNDRY_MODEL_NAME"],
-            instructions="Generate images based on user prompts",
-            tools=[tool],
-        ),
-        description="Agent for image generation.",
-    )
-    print(f"Agent created (id: {agent.id}, name: {agent.name}, version: {agent.version})")
+        # [START tool_declaration]
+        tool = ImageGenTool(
+            model=image_generation_model,  # Model such as "gpt-image-1"
+            quality="low",
+            size="1024x1024",
+        )
+        # [END tool_declaration]
 
-    response = openai_client.responses.create(
-        input="Generate an image of Microsoft logo.",
-        extra_headers={
-            "x-ms-oai-image-generation-deployment": image_generation_model
-        },  # this is required at the moment for image generation
-        extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
-    )
-    print(f"Response created: {response.id}")
+        agent = project_client.agents.create_version(
+            agent_name="MyAgent",
+            definition=PromptAgentDefinition(
+                model=os.environ["FOUNDRY_MODEL_NAME"],
+                instructions="Generate images based on user prompts",
+                tools=[tool],
+            ),
+            description="Agent for image generation.",
+        )
+        print(f"Agent created (id: {agent.id}, name: {agent.name}, version: {agent.version})")
 
-    print("\nCleaning up...")
-    project_client.agents.delete_version(agent_name=agent.name, agent_version=agent.version)
-    print("Agent deleted")
+        response = openai_client.responses.create(
+            input="Generate an image of Microsoft logo.",
+            extra_headers={
+                "x-ms-oai-image-generation-deployment": image_generation_model
+            },  # this is required at the moment for image generation
+            extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
+        )
+        print(f"Response created: {response.id}")
 
-    # [START download_image]
-    image_data = [output.result for output in response.output if output.type == "image_generation_call"]
-    if image_data and image_data[0]:
-        print("Downloading generated image...")
-        filename = "microsoft.png"
-        file_path = os.path.join(tempfile.gettempdir(), filename)
+        print("\nCleaning up...")
+        project_client.agents.delete_version(agent_name=agent.name, agent_version=agent.version)
+        print("Agent deleted")
 
-        with open(file_path, "wb") as f:
-            f.write(base64.b64decode(image_data[0]))
+        # [START download_image]
+        image_data = [output.result for output in response.output if output.type == "image_generation_call"]
+        if image_data and image_data[0]:
+            print("Downloading generated image...")
+            filename = "microsoft.png"
+            file_path = os.path.join(tempfile.gettempdir(), filename)
 
-        # [END download_image]
-        print(f"Image saved to: {file_path}")
+            with open(file_path, "wb") as f:
+                f.write(base64.b64decode(image_data[0]))
+
+            # [END download_image]
+            print(f"Image saved to: {file_path}")

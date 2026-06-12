@@ -29,7 +29,7 @@ USAGE:
 
 import os
 from dotenv import load_dotenv
-from azure.identity import DefaultAzureCredential
+from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from azure.ai.projects import AIProjectClient
 from azure.ai.projects.models import (
     AzureFunctionBinding,
@@ -45,60 +45,63 @@ load_dotenv()
 agent = None
 
 endpoint = os.environ["FOUNDRY_PROJECT_ENDPOINT"]
+scope = "https://ai.azure.us/.default" if ".azure.us" in endpoint else "https://ai.azure.com/.default"
 
 with (
     DefaultAzureCredential() as credential,
-    AIProjectClient(endpoint=endpoint, credential=credential) as project_client,
-    project_client.get_openai_client() as openai_client,
+    AIProjectClient(endpoint=endpoint, credential=credential, credential_scopes=[scope]) as project_client,
 ):
+    api_key = get_bearer_token_provider(credential, scope)
 
-    # [START tool_declaration]
-    tool = AzureFunctionTool(
-        azure_function=AzureFunctionDefinition(
-            input_binding=AzureFunctionBinding(
-                storage_queue=AzureFunctionStorageQueue(
-                    queue_name=os.environ["STORAGE_INPUT_QUEUE_NAME"],
-                    queue_service_endpoint=os.environ["STORAGE_QUEUE_SERVICE_ENDPOINT"],
-                )
-            ),
-            output_binding=AzureFunctionBinding(
-                storage_queue=AzureFunctionStorageQueue(
-                    queue_name=os.environ["STORAGE_OUTPUT_QUEUE_NAME"],
-                    queue_service_endpoint=os.environ["STORAGE_QUEUE_SERVICE_ENDPOINT"],
-                )
-            ),
-            function=AzureFunctionDefinitionFunction(
-                name="queue_trigger",
-                description="Get weather for a given location",
-                parameters={
-                    "type": "object",
-                    "properties": {"location": {"type": "string", "description": "location to determine weather for"}},
-                },
+    with project_client.get_openai_client(api_key=api_key) as openai_client:
+
+        # [START tool_declaration]
+        tool = AzureFunctionTool(
+            azure_function=AzureFunctionDefinition(
+                input_binding=AzureFunctionBinding(
+                    storage_queue=AzureFunctionStorageQueue(
+                        queue_name=os.environ["STORAGE_INPUT_QUEUE_NAME"],
+                        queue_service_endpoint=os.environ["STORAGE_QUEUE_SERVICE_ENDPOINT"],
+                    )
+                ),
+                output_binding=AzureFunctionBinding(
+                    storage_queue=AzureFunctionStorageQueue(
+                        queue_name=os.environ["STORAGE_OUTPUT_QUEUE_NAME"],
+                        queue_service_endpoint=os.environ["STORAGE_QUEUE_SERVICE_ENDPOINT"],
+                    )
+                ),
+                function=AzureFunctionDefinitionFunction(
+                    name="queue_trigger",
+                    description="Get weather for a given location",
+                    parameters={
+                        "type": "object",
+                        "properties": {"location": {"type": "string", "description": "location to determine weather for"}},
+                    },
+                ),
+            )
+        )
+        # [END tool_declaration]
+
+        agent = project_client.agents.create_version(
+            agent_name="MyAgent",
+            definition=PromptAgentDefinition(
+                model=os.environ["FOUNDRY_MODEL_NAME"],
+                instructions="You are a helpful assistant.",
+                tools=[tool],
             ),
         )
-    )
-    # [END tool_declaration]
+        print(f"Agent created (id: {agent.id}, name: {agent.name}, version: {agent.version})")
 
-    agent = project_client.agents.create_version(
-        agent_name="MyAgent",
-        definition=PromptAgentDefinition(
-            model=os.environ["FOUNDRY_MODEL_NAME"],
-            instructions="You are a helpful assistant.",
-            tools=[tool],
-        ),
-    )
-    print(f"Agent created (id: {agent.id}, name: {agent.name}, version: {agent.version})")
+        user_input = "What is the weather in Seattle?"
 
-    user_input = "What is the weather in Seattle?"
+        response = openai_client.responses.create(
+            tool_choice="required",
+            input=user_input,
+            extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
+        )
 
-    response = openai_client.responses.create(
-        tool_choice="required",
-        input=user_input,
-        extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
-    )
+        print(f"Response output: {response.output_text}")
 
-    print(f"Response output: {response.output_text}")
-
-    print("\nCleaning up...")
-    project_client.agents.delete_version(agent_name=agent.name, agent_version=agent.version)
-    print("Agent deleted")
+        print("\nCleaning up...")
+        project_client.agents.delete_version(agent_name=agent.name, agent_version=agent.version)
+        print("Agent deleted")

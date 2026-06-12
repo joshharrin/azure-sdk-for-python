@@ -26,58 +26,61 @@ USAGE:
 import asyncio
 import os
 from dotenv import load_dotenv
-from azure.identity.aio import DefaultAzureCredential
+from azure.identity.aio import DefaultAzureCredential, get_bearer_token_provider
 from azure.ai.projects.aio import AIProjectClient
 from azure.ai.projects.models import PromptAgentDefinition, CodeInterpreterTool
 
 load_dotenv()
 
 endpoint = os.environ["FOUNDRY_PROJECT_ENDPOINT"]
+scope = "https://ai.azure.us/.default" if ".azure.us" in endpoint else "https://ai.azure.com/.default"
 
 
 async def main() -> None:
     async with (
         DefaultAzureCredential() as credential,
-        AIProjectClient(endpoint=endpoint, credential=credential) as project_client,
-        project_client.get_openai_client() as openai_client,
+        AIProjectClient(endpoint=endpoint, credential=credential, credential_scopes=[scope]) as project_client,
     ):
+        api_key = get_bearer_token_provider(credential, scope)
 
-        # Create agent with code interpreter tool
-        agent = await project_client.agents.create_version(
-            agent_name="MyAgent",
-            definition=PromptAgentDefinition(
-                model=os.environ["FOUNDRY_MODEL_NAME"],
-                instructions="You are a helpful assistant.",
-                tools=[CodeInterpreterTool()],
-            ),
-            description="Code interpreter agent for data analysis and visualization.",
-        )
-        print(f"Agent created (id: {agent.id}, name: {agent.name}, version: {agent.version})")
+        async with project_client.get_openai_client(api_key=api_key) as openai_client:
 
-        # Create a conversation for the agent interaction
-        conversation = await openai_client.conversations.create()
-        print(f"Created conversation (id: {conversation.id})")
+            # Create agent with code interpreter tool
+            agent = await project_client.agents.create_version(
+                agent_name="MyAgent",
+                definition=PromptAgentDefinition(
+                    model=os.environ["FOUNDRY_MODEL_NAME"],
+                    instructions="You are a helpful assistant.",
+                    tools=[CodeInterpreterTool()],
+                ),
+                description="Code interpreter agent for data analysis and visualization.",
+            )
+            print(f"Agent created (id: {agent.id}, name: {agent.name}, version: {agent.version})")
 
-        # Send request for the agent to generate a multiplication chart.
-        response = await openai_client.responses.create(
-            conversation=conversation.id,
-            input="Could you please generate a multiplication chart showing the products for 1-10 multiplied by 1-10 (a 10x10 times table)?",
-            extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
-            tool_choice="required",
-        )
-        print(f"Response completed (id: {response.id})")
+            # Create a conversation for the agent interaction
+            conversation = await openai_client.conversations.create()
+            print(f"Created conversation (id: {conversation.id})")
 
-        # Print code executed by the code interpreter tool.
-        code = next((output.code for output in response.output if output.type == "code_interpreter_call"), None)
-        if code:
-            print(f"Code Interpreter code:\n {code}")
+            # Send request for the agent to generate a multiplication chart.
+            response = await openai_client.responses.create(
+                conversation=conversation.id,
+                input="Could you please generate a multiplication chart showing the products for 1-10 multiplied by 1-10 (a 10x10 times table)?",
+                extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
+                tool_choice="required",
+            )
+            print(f"Response completed (id: {response.id})")
 
-        # Print final assistant text output.
-        print(f"Agent response: {response.output_text}")
+            # Print code executed by the code interpreter tool.
+            code = next((output.code for output in response.output if output.type == "code_interpreter_call"), None)
+            if code:
+                print(f"Code Interpreter code:\n {code}")
 
-        print("\nCleaning up...")
-        await project_client.agents.delete_version(agent_name=agent.name, agent_version=agent.version)
-        print("Agent deleted")
+            # Print final assistant text output.
+            print(f"Agent response: {response.output_text}")
+
+            print("\nCleaning up...")
+            await project_client.agents.delete_version(agent_name=agent.name, agent_version=agent.version)
+            print("Agent deleted")
 
 
 if __name__ == "__main__":

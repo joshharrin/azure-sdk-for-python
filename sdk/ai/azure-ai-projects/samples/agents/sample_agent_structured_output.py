@@ -33,7 +33,7 @@ USAGE:
 import os
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
-from azure.identity import DefaultAzureCredential
+from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from azure.ai.projects import AIProjectClient
 from azure.ai.projects.models import (
     PromptAgentDefinition,
@@ -52,47 +52,50 @@ class CalendarEvent(BaseModel):
 
 
 endpoint = os.environ["FOUNDRY_PROJECT_ENDPOINT"]
+scope = "https://ai.azure.us/.default" if ".azure.us" in endpoint else "https://ai.azure.com/.default"
 
 with (
     DefaultAzureCredential() as credential,
-    AIProjectClient(endpoint=endpoint, credential=credential) as project_client,
-    project_client.get_openai_client() as openai_client,
+    AIProjectClient(endpoint=endpoint, credential=credential, credential_scopes=[scope]) as project_client,
 ):
+    api_key = get_bearer_token_provider(credential, scope)
 
-    agent = project_client.agents.create_version(
-        agent_name="MyAgent",
-        definition=PromptAgentDefinition(
-            model=os.environ["FOUNDRY_MODEL_NAME"],
-            text=PromptAgentDefinitionTextOptions(
-                format=TextResponseFormatJsonSchema(name="CalendarEvent", schema=CalendarEvent.model_json_schema())
+    with project_client.get_openai_client(api_key=api_key) as openai_client:
+
+        agent = project_client.agents.create_version(
+            agent_name="MyAgent",
+            definition=PromptAgentDefinition(
+                model=os.environ["FOUNDRY_MODEL_NAME"],
+                text=PromptAgentDefinitionTextOptions(
+                    format=TextResponseFormatJsonSchema(name="CalendarEvent", schema=CalendarEvent.model_json_schema())
+                ),
+                instructions="""
+                    You are a helpful assistant that extracts calendar event information from the input user messages,
+                    and returns it in the desired structured output format.
+                """,
             ),
-            instructions="""
-                You are a helpful assistant that extracts calendar event information from the input user messages,
-                and returns it in the desired structured output format.
-            """,
-        ),
-    )
-    print(f"Agent created (id: {agent.id}, name: {agent.name}, version: {agent.version})")
+        )
+        print(f"Agent created (id: {agent.id}, name: {agent.name}, version: {agent.version})")
 
-    conversation = openai_client.conversations.create(
-        items=[
-            {
-                "type": "message",
-                "role": "user",
-                "content": "Alice and Bob are going to a science fair this Friday, November 7, 2025.",
-            }
-        ],
-    )
-    print(f"Created conversation with initial user message (id: {conversation.id})")
+        conversation = openai_client.conversations.create(
+            items=[
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": "Alice and Bob are going to a science fair this Friday, November 7, 2025.",
+                }
+            ],
+        )
+        print(f"Created conversation with initial user message (id: {conversation.id})")
 
-    response = openai_client.responses.create(
-        conversation=conversation.id,
-        extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
-    )
-    print(f"Response output: {response.output_text}")
+        response = openai_client.responses.create(
+            conversation=conversation.id,
+            extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
+        )
+        print(f"Response output: {response.output_text}")
 
-    openai_client.conversations.delete(conversation_id=conversation.id)
-    print("Conversation deleted")
+        openai_client.conversations.delete(conversation_id=conversation.id)
+        print("Conversation deleted")
 
-    project_client.agents.delete_version(agent_name=agent.name, agent_version=agent.version)
-    print("Agent deleted")
+        project_client.agents.delete_version(agent_name=agent.name, agent_version=agent.version)
+        print("Agent deleted")

@@ -26,134 +26,137 @@ USAGE:
 
 import os
 from dotenv import load_dotenv
-from azure.identity import DefaultAzureCredential
+from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from azure.ai.projects import AIProjectClient
 from azure.ai.projects.models import PromptAgentDefinition, FileSearchTool
 
 load_dotenv()
 
 endpoint = os.environ["FOUNDRY_PROJECT_ENDPOINT"]
+scope = "https://ai.azure.us/.default" if ".azure.us" in endpoint else "https://ai.azure.com/.default"
 
 with (
     DefaultAzureCredential() as credential,
-    AIProjectClient(endpoint=endpoint, credential=credential) as project_client,
-    project_client.get_openai_client() as openai_client,
+    AIProjectClient(endpoint=endpoint, credential=credential, credential_scopes=[scope]) as project_client,
 ):
-    # Load the file to be indexed for search
-    asset_file_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../assets/product_info.md"))
+    api_key = get_bearer_token_provider(credential, scope)
 
-    print("Setting up file search with streaming responses...")
+    with project_client.get_openai_client(api_key=api_key) as openai_client:
+        # Load the file to be indexed for search
+        asset_file_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../assets/product_info.md"))
 
-    # Create vector store for file search
-    vector_store = openai_client.vector_stores.create(name="ProductInfoStreamStore")
-    print(f"Vector store created (id: {vector_store.id})")
+        print("Setting up file search with streaming responses...")
 
-    # Upload file to vector store
-    try:
-        with open(asset_file_path, "rb") as f:
-            file = openai_client.vector_stores.files.upload_and_poll(vector_store_id=vector_store.id, file=f)
-        print(f"File uploaded to vector store (id: {file.id})")
-    except FileNotFoundError:
-        print(f"Warning: Asset file not found at {asset_file_path}")
-        print("Creating vector store without file for demonstration...")
+        # Create vector store for file search
+        vector_store = openai_client.vector_stores.create(name="ProductInfoStreamStore")
+        print(f"Vector store created (id: {vector_store.id})")
 
-    # Create agent with file search tool
-    agent = project_client.agents.create_version(
-        agent_name="StreamingFileSearchAgent",
-        definition=PromptAgentDefinition(
-            model=os.environ["FOUNDRY_MODEL_NAME"],
-            instructions="You are a helpful assistant that can search through product information and provide detailed responses. Use the file search tool to find relevant information before answering.",
-            tools=[FileSearchTool(vector_store_ids=[vector_store.id])],
-        ),
-        description="File search agent with streaming response capabilities.",
-    )
-    print(f"Agent created (id: {agent.id}, name: {agent.name}, version: {agent.version})")
+        # Upload file to vector store
+        try:
+            with open(asset_file_path, "rb") as f:
+                file = openai_client.vector_stores.files.upload_and_poll(vector_store_id=vector_store.id, file=f)
+            print(f"File uploaded to vector store (id: {file.id})")
+        except FileNotFoundError:
+            print(f"Warning: Asset file not found at {asset_file_path}")
+            print("Creating vector store without file for demonstration...")
 
-    # Create a conversation for the agent interaction
-    conversation = openai_client.conversations.create()
-    print(f"Created conversation (id: {conversation.id})")
+        # Create agent with file search tool
+        agent = project_client.agents.create_version(
+            agent_name="StreamingFileSearchAgent",
+            definition=PromptAgentDefinition(
+                model=os.environ["FOUNDRY_MODEL_NAME"],
+                instructions="You are a helpful assistant that can search through product information and provide detailed responses. Use the file search tool to find relevant information before answering.",
+                tools=[FileSearchTool(vector_store_ids=[vector_store.id])],
+            ),
+            description="File search agent with streaming response capabilities.",
+        )
+        print(f"Agent created (id: {agent.id}, name: {agent.name}, version: {agent.version})")
 
-    print("\n" + "=" * 60)
-    print("Starting file search with streaming response...")
-    print("=" * 60)
+        # Create a conversation for the agent interaction
+        conversation = openai_client.conversations.create()
+        print(f"Created conversation (id: {conversation.id})")
 
-    # Create a streaming response with file search capabilities
-    stream_response = openai_client.responses.create(
-        stream=True,
-        conversation=conversation.id,
-        input=[
-            {
-                "role": "user",
-                "content": "Tell me about Contoso products and their features in detail. Please search through the available documentation.",
-            },
-        ],
-        extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
-    )
+        print("\n" + "=" * 60)
+        print("Starting file search with streaming response...")
+        print("=" * 60)
 
-    print("Processing streaming file search results...\n")
+        # Create a streaming response with file search capabilities
+        stream_response = openai_client.responses.create(
+            stream=True,
+            conversation=conversation.id,
+            input=[
+                {
+                    "role": "user",
+                    "content": "Tell me about Contoso products and their features in detail. Please search through the available documentation.",
+                },
+            ],
+            extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
+        )
 
-    # Process streaming events as they arrive
-    for event in stream_response:
-        if event.type == "response.created":
-            print(f"Stream response created with ID: {event.response.id}")
-        elif event.type == "response.output_text.delta":
-            print(f"Delta: {event.delta}")
-        elif event.type == "response.text.done":
-            print(f"\nResponse done with full message: {event.text}")
-        elif event.type == "response.completed":
-            print("\nResponse completed!")
-            print(f"Full response: {event.response.output_text}")
+        print("Processing streaming file search results...\n")
 
-    print("\n" + "=" * 60)
-    print("Demonstrating follow-up query with streaming...")
-    print("=" * 60)
+        # Process streaming events as they arrive
+        for event in stream_response:
+            if event.type == "response.created":
+                print(f"Stream response created with ID: {event.response.id}")
+            elif event.type == "response.output_text.delta":
+                print(f"Delta: {event.delta}")
+            elif event.type == "response.text.done":
+                print(f"\nResponse done with full message: {event.text}")
+            elif event.type == "response.completed":
+                print("\nResponse completed!")
+                print(f"Full response: {event.response.output_text}")
 
-    # Demonstrate a follow-up query in the same conversation
-    stream_response = openai_client.responses.create(
-        stream=True,
-        conversation=conversation.id,
-        input=[
-            {"role": "user", "content": "Tell me about Smart Eyewear and its features."},
-        ],
-        extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
-    )
+        print("\n" + "=" * 60)
+        print("Demonstrating follow-up query with streaming...")
+        print("=" * 60)
 
-    print("Processing follow-up streaming response...\n")
+        # Demonstrate a follow-up query in the same conversation
+        stream_response = openai_client.responses.create(
+            stream=True,
+            conversation=conversation.id,
+            input=[
+                {"role": "user", "content": "Tell me about Smart Eyewear and its features."},
+            ],
+            extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
+        )
 
-    # Process streaming events for the follow-up
-    for event in stream_response:
-        if event.type == "response.created":
-            print(f"Follow-up response created with ID: {event.response.id}")
-        elif event.type == "response.output_text.delta":
-            print(f"Delta: {event.delta}")
-        elif event.type == "response.text.done":
-            print("\nFollow-up response done!")
-        elif event.type == "response.output_item.done":
-            if event.item.type == "message":
-                item = event.item
-                if item.content[-1].type == "output_text":
-                    text_content = item.content[-1]
-                    for annotation in text_content.annotations:
-                        if annotation.type == "file_citation":
-                            print(f"File Citation - Filename: {annotation.filename}, File ID: {annotation.file_id}")
-        elif event.type == "response.completed":
-            print("\nFollow-up completed!")
-            print(f"Agent response: {event.response.output_text}")
+        print("Processing follow-up streaming response...\n")
 
-    # Clean up resources
-    print("\n" + "=" * 60)
-    print("Cleaning up resources...")
-    print("=" * 60)
+        # Process streaming events for the follow-up
+        for event in stream_response:
+            if event.type == "response.created":
+                print(f"Follow-up response created with ID: {event.response.id}")
+            elif event.type == "response.output_text.delta":
+                print(f"Delta: {event.delta}")
+            elif event.type == "response.text.done":
+                print("\nFollow-up response done!")
+            elif event.type == "response.output_item.done":
+                if event.item.type == "message":
+                    item = event.item
+                    if item.content[-1].type == "output_text":
+                        text_content = item.content[-1]
+                        for annotation in text_content.annotations:
+                            if annotation.type == "file_citation":
+                                print(f"File Citation - Filename: {annotation.filename}, File ID: {annotation.file_id}")
+            elif event.type == "response.completed":
+                print("\nFollow-up completed!")
+                print(f"Agent response: {event.response.output_text}")
 
-    # Delete the agent
-    project_client.agents.delete_version(agent_name=agent.name, agent_version=agent.version)
-    print("Agent deleted")
+        # Clean up resources
+        print("\n" + "=" * 60)
+        print("Cleaning up resources...")
+        print("=" * 60)
 
-    # Clean up vector store
-    try:
-        openai_client.vector_stores.delete(vector_store.id)
-        print("Vector store deleted")
-    except Exception as e:  # pylint: disable=broad-exception-caught
-        print(f"Warning: Could not delete vector store: {e}")
+        # Delete the agent
+        project_client.agents.delete_version(agent_name=agent.name, agent_version=agent.version)
+        print("Agent deleted")
+
+        # Clean up vector store
+        try:
+            openai_client.vector_stores.delete(vector_store.id)
+            print("Vector store deleted")
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            print(f"Warning: Could not delete vector store: {e}")
 
 print("\nFile search streaming sample completed!")

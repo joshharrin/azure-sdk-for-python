@@ -29,52 +29,55 @@ USAGE:
 
 import os
 from dotenv import load_dotenv
-from azure.identity import DefaultAzureCredential
+from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from azure.ai.projects import AIProjectClient
 from azure.ai.projects.models import PromptAgentDefinition
 
 load_dotenv()
 
 endpoint = os.environ["FOUNDRY_PROJECT_ENDPOINT"]
+scope = "https://ai.azure.us/.default" if ".azure.us" in endpoint else "https://ai.azure.com/.default"
 
 with (
     DefaultAzureCredential() as credential,
-    AIProjectClient(endpoint=endpoint, credential=credential) as project_client,
-    project_client.get_openai_client() as openai_client,
+    AIProjectClient(endpoint=endpoint, credential=credential, credential_scopes=[scope]) as project_client,
 ):
+    api_key = get_bearer_token_provider(credential, scope)
 
-    agent = project_client.agents.create_version(
-        agent_name="MyAgent",
-        definition=PromptAgentDefinition(
-            model=os.environ["FOUNDRY_MODEL_NAME"],
-            instructions="You are a helpful assistant that answers general questions",
-        ),
-    )
-    print(f"Agent created (id: {agent.id}, name: {agent.name}, version: {agent.version})")
+    with project_client.get_openai_client(api_key=api_key) as openai_client:
 
-    conversation = openai_client.conversations.create(
-        items=[{"type": "message", "role": "user", "content": "Tell me about the capital city of France"}],
-    )
-    print(f"Created conversation with initial user message (id: {conversation.id})")
+        agent = project_client.agents.create_version(
+            agent_name="MyAgent",
+            definition=PromptAgentDefinition(
+                model=os.environ["FOUNDRY_MODEL_NAME"],
+                instructions="You are a helpful assistant that answers general questions",
+            ),
+        )
+        print(f"Agent created (id: {agent.id}, name: {agent.name}, version: {agent.version})")
 
-    with openai_client.responses.create(
-        conversation=conversation.id,
-        extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
-        stream=True,
-    ) as response_stream_events:
+        conversation = openai_client.conversations.create(
+            items=[{"type": "message", "role": "user", "content": "Tell me about the capital city of France"}],
+        )
+        print(f"Created conversation with initial user message (id: {conversation.id})")
 
-        for event in response_stream_events:
-            if event.type == "response.created":
-                print(f"Stream response created with ID: {event.response.id}\n")
-            elif event.type == "response.output_text.delta":
-                print(event.delta, end="", flush=True)
-            elif event.type == "response.text.done":
-                print("\n\nResponse text done. Access final text in 'event.text'")
-            elif event.type == "response.completed":
-                print("\n\nResponse completed. Access final text in 'event.response.output_text'")
+        with openai_client.responses.create(
+            conversation=conversation.id,
+            extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
+            stream=True,
+        ) as response_stream_events:
 
-    openai_client.conversations.delete(conversation_id=conversation.id)
-    print("Conversation deleted")
+            for event in response_stream_events:
+                if event.type == "response.created":
+                    print(f"Stream response created with ID: {event.response.id}\n")
+                elif event.type == "response.output_text.delta":
+                    print(event.delta, end="", flush=True)
+                elif event.type == "response.text.done":
+                    print("\n\nResponse text done. Access final text in 'event.text'")
+                elif event.type == "response.completed":
+                    print("\n\nResponse completed. Access final text in 'event.response.output_text'")
 
-    project_client.agents.delete_version(agent_name=agent.name, agent_version=agent.version)
-    print("Agent deleted")
+        openai_client.conversations.delete(conversation_id=conversation.id)
+        print("Conversation deleted")
+
+        project_client.agents.delete_version(agent_name=agent.name, agent_version=agent.version)
+        print("Agent deleted")
